@@ -1,23 +1,17 @@
 #define VK_USE_PLATFORM_WIN32_KHR
+
+#ifndef UINT32_MAX
 #define UINT32_MAX	((uint32_t)-1)
+#endif
 
 #include <iostream>
-#include <vector>
 #include <set>
+#include <array>
 #include <algorithm>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_vulkan.h>
-#include <vulkan/vulkan.h>
 
 #include "Engine.h"
-
-static VkInstance			g_Instance = VK_NULL_HANDLE;
-static VkSurfaceKHR			g_Surface = VK_NULL_HANDLE;
-static VkPhysicalDevice		g_PhysicalDevice = VK_NULL_HANDLE;
-static uint32_t				g_QueueFamily = UINT32_MAX;
-static VkDevice				g_Device = VK_NULL_HANDLE;
-static VkQueue				g_Queue = VK_NULL_HANDLE;
-static VkSwapchainKHR		g_SwapChain = VK_NULL_HANDLE;
 
 static Engine* s_Instance = nullptr;
 
@@ -31,7 +25,7 @@ void check_vk_result(const VkResult result)
 	throw std::runtime_error("[Vulkan] Error: VkResult = " + result);
 }
 
-static void CreateVulkanInstance(std::vector<const char*> extensions, uint32_t num_extensions)
+void Engine::CreateVulkanInstance(const std::vector<const char*>& extensions, uint32_t num_extensions)
 {
 	VkResult result;
 
@@ -55,18 +49,18 @@ static void CreateVulkanInstance(std::vector<const char*> extensions, uint32_t n
 
 #endif
 
-	result = vkCreateInstance(&create_info, nullptr, &g_Instance);
+	result = vkCreateInstance(&create_info, nullptr, &m_Instance);
 	check_vk_result(result);
 }
 
-static void SetupVulkan(SDL_Window* window)
+void Engine::SetupVulkan()
 {
 	VkResult result;
 
 	// Select GPU
 	{
 		uint32_t count = 0;
-		result = vkEnumeratePhysicalDevices(g_Instance, &count, nullptr);
+		result = vkEnumeratePhysicalDevices(m_Instance, &count, nullptr);
 		check_vk_result(result);
 
 		if (count == 0) 
@@ -74,7 +68,7 @@ static void SetupVulkan(SDL_Window* window)
 
 		std::vector<VkPhysicalDevice> devices(count);
 
-		vkEnumeratePhysicalDevices(g_Instance, &count, devices.data());
+		vkEnumeratePhysicalDevices(m_Instance, &count, devices.data());
 
 		int use_gpu = 0;
 
@@ -91,27 +85,27 @@ static void SetupVulkan(SDL_Window* window)
 			}
 		}
 
-		g_PhysicalDevice = devices[use_gpu];
+		m_PhysicalDevice = devices[use_gpu];
 	}
 	
 	// Select Graphics Queue Family
 	{
 		uint32_t count = 0;
-		vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &count, nullptr);
+		vkGetPhysicalDeviceQueueFamilyProperties(m_PhysicalDevice, &count, nullptr);
 
 		std::vector<VkQueueFamilyProperties> queues(count);
-		vkGetPhysicalDeviceQueueFamilyProperties(g_PhysicalDevice, &count, queues.data());
+		vkGetPhysicalDeviceQueueFamilyProperties(m_PhysicalDevice, &count, queues.data());
 
 		for (uint32_t i = 0; i < count; i++)
 		{
 			if (queues[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
 			{
-				g_QueueFamily = i;
+				m_QueueFamily = i;
 				break;
 			}
 		}
 
-		if (g_QueueFamily == UINT32_MAX)
+		if (m_QueueFamily == UINT32_MAX)
 			throw std::runtime_error("Failed to find graphics queue family.");
 	}
 
@@ -123,10 +117,10 @@ static void SetupVulkan(SDL_Window* window)
 		bool available = false;
 
 		uint32_t count;
-		vkEnumerateDeviceExtensionProperties(g_PhysicalDevice, nullptr, &count, nullptr);
+		vkEnumerateDeviceExtensionProperties(m_PhysicalDevice, nullptr, &count, nullptr);
 
 		std::vector<VkExtensionProperties> device_extensions(count);
-		vkEnumerateDeviceExtensionProperties(g_PhysicalDevice, nullptr, &count, device_extensions.data());
+		vkEnumerateDeviceExtensionProperties(m_PhysicalDevice, nullptr, &count, device_extensions.data());
 
 		for (const auto& extension : device_extensions)
 		{
@@ -147,7 +141,7 @@ static void SetupVulkan(SDL_Window* window)
 
 		VkDeviceQueueCreateInfo queue_info = {};
 		queue_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-		queue_info.queueFamilyIndex = g_QueueFamily;
+		queue_info.queueFamilyIndex = m_QueueFamily;
 		queue_info.queueCount = 1;
 		queue_info.pQueuePriorities = &priority;
 
@@ -171,28 +165,33 @@ static void SetupVulkan(SDL_Window* window)
 		create_info.enabledLayerCount = 0;
 #endif
 
-		result = vkCreateDevice(g_PhysicalDevice, &create_info, nullptr, &g_Device);
+		result = vkCreateDevice(m_PhysicalDevice, &create_info, nullptr, &m_Device);
 		check_vk_result(result);
 
-		vkGetDeviceQueue(g_Device, g_QueueFamily, 0, &g_Queue);
+		vkGetDeviceQueue(m_Device, m_QueueFamily, 0, &m_Queue);
 	}
 
 	// Query Swap Chain support
 	{
 		VkSurfaceCapabilitiesKHR capabilities;
-		vkGetPhysicalDeviceSurfaceCapabilitiesKHR(g_PhysicalDevice, g_Surface, &capabilities);
+		result = vkGetPhysicalDeviceSurfaceCapabilitiesKHR(m_PhysicalDevice, m_Surface, &capabilities);
+		check_vk_result(result);
 
 		uint32_t format_count;
-		vkGetPhysicalDeviceSurfaceFormatsKHR(g_PhysicalDevice, g_Surface, &format_count, nullptr);
+		result = vkGetPhysicalDeviceSurfaceFormatsKHR(m_PhysicalDevice, m_Surface, &format_count, nullptr);
+		check_vk_result(result);
 
 		std::vector<VkSurfaceFormatKHR> formats(format_count);
-		vkGetPhysicalDeviceSurfaceFormatsKHR(g_PhysicalDevice, g_Surface, &format_count, formats.data());
+		result = vkGetPhysicalDeviceSurfaceFormatsKHR(m_PhysicalDevice, m_Surface, &format_count, formats.data());
+		check_vk_result(result);
 
 		uint32_t present_count;
-		vkGetPhysicalDeviceSurfacePresentModesKHR(g_PhysicalDevice, g_Surface, &present_count, nullptr);
+		result = vkGetPhysicalDeviceSurfacePresentModesKHR(m_PhysicalDevice, m_Surface, &present_count, nullptr);
+		check_vk_result(result);
 
 		std::vector<VkPresentModeKHR> present_modes(present_count);
-		vkGetPhysicalDeviceSurfacePresentModesKHR(g_PhysicalDevice, g_Surface, &present_count, present_modes.data());
+		result = vkGetPhysicalDeviceSurfacePresentModesKHR(m_PhysicalDevice, m_Surface, &present_count, present_modes.data());
+		check_vk_result(result);
 
 		if (formats.empty() || present_modes.empty())
 		{
@@ -232,7 +231,7 @@ static void SetupVulkan(SDL_Window* window)
 		{
 			int width, height;
 
-			SDL_Vulkan_GetDrawableSize(window, &width, &height);
+			SDL_Vulkan_GetDrawableSize(m_WindowHandle, &width, &height);
 			extent.width = static_cast<uint32_t>(width);
 			extent.height = static_cast<uint32_t>(height);
 
@@ -250,7 +249,7 @@ static void SetupVulkan(SDL_Window* window)
 		
 		VkSwapchainCreateInfoKHR create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
-		create_info.surface = g_Surface;
+		create_info.surface = m_Surface;
 		create_info.minImageCount = image_count;
 		create_info.imageFormat = selected_format.format;
 		create_info.imageColorSpace = selected_format.colorSpace;
@@ -259,7 +258,7 @@ static void SetupVulkan(SDL_Window* window)
 		create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 		create_info.presentMode = selected_present_mode;
 
-		result = vkCreateSwapchainKHR(g_Device, &create_info, nullptr, &g_SwapChain);
+		result = vkCreateSwapchainKHR(m_Device, &create_info, nullptr, &m_SwapChain);
 		check_vk_result(result);
 	}
 }
@@ -288,9 +287,9 @@ void Engine::Init()
 {
 	SDL_Init(SDL_INIT_VIDEO);
 
-	m_WindowHandle = SDL_CreateWindow(m_Specification.Name.c_str(), SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, m_Specification.Width, m_Specification.Height, SDL_WINDOW_VULKAN);
+	m_WindowHandle = SDL_CreateWindow(m_Specification.Name.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, m_Specification.Width, m_Specification.Height, SDL_WINDOW_VULKAN);
 
-	// Get the names of the Vulkan instance extensions needed to create a surface with
+	// Get the names of the Vulkan instance extensions needed to create a surface
 	uint32_t num_extensions;
 	if (SDL_Vulkan_GetInstanceExtensions(m_WindowHandle, &num_extensions, nullptr) == SDL_FALSE)
 		throw std::runtime_error("Error getting Vulkan instance extensions.");
@@ -301,10 +300,10 @@ void Engine::Init()
 
 	CreateVulkanInstance(extensions, num_extensions);
 
-	if (SDL_Vulkan_CreateSurface(m_WindowHandle, g_Instance, &g_Surface) == SDL_FALSE)
+	if (SDL_Vulkan_CreateSurface(m_WindowHandle, m_Instance, &m_Surface) == SDL_FALSE)
 		throw std::runtime_error("Error creating Vulkan Surface.");
 
-	SetupVulkan(m_WindowHandle);
+	SetupVulkan();
 }
 
 void Engine::Run()
@@ -331,10 +330,10 @@ void Engine::Run()
 
 void Engine::Shutdown()
 {
-	vkDestroySurfaceKHR(g_Instance, g_Surface, nullptr);
-	vkDestroySwapchainKHR(g_Device, g_SwapChain, nullptr);
-	vkDestroyDevice(g_Device, nullptr);
-	vkDestroyInstance(g_Instance, nullptr);
+	vkDestroySurfaceKHR(m_Instance, m_Surface, nullptr);
+	vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
+	vkDestroyDevice(m_Device, nullptr);
+	vkDestroyInstance(m_Instance, nullptr);
 
 	SDL_DestroyWindow(m_WindowHandle);
 	SDL_Quit();
