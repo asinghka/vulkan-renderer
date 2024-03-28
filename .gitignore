@@ -1,3 +1,7 @@
+## SPIR-V Shader Binaries
+*.spv
+*.bat
+
 ## Visual Studio artifacts
 .vs
 ipch

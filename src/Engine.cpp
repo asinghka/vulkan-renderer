@@ -1,17 +1,20 @@
+#include <iostream>
+#include <set>
+#include <array>
+#include <algorithm>
+#include <fstream>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_vulkan.h>
+
+#include "Engine.h"
+
+
 #define VK_USE_PLATFORM_WIN32_KHR
 
 #ifndef UINT32_MAX
 #define UINT32_MAX	((uint32_t)-1)
 #endif
 
-#include <iostream>
-#include <set>
-#include <array>
-#include <algorithm>
-#include <SDL2/SDL.h>
-#include <SDL2/SDL_vulkan.h>
-
-#include "Engine.h"
 
 static Engine* s_Instance = nullptr;
 
@@ -25,7 +28,29 @@ void check_vk_result(const VkResult result)
 	throw std::runtime_error("[Vulkan] Error: VkResult = " + result);
 }
 
-void Engine::CreateVulkanInstance(const std::vector<const char*>& extensions, uint32_t num_extensions)
+static std::vector<char> ReadFile(const std::string& filename)
+{
+	std::ifstream file(filename, std::ios::ate | std::ios::binary);
+
+	if (!file.is_open())
+	{
+		throw std::runtime_error("Failed to open file.");
+	}
+
+	auto file_size = file.tellg();
+	file.seekg(0);
+
+	std::vector<char> buffer(file_size);
+
+	file.seekg(0);
+	file.read(buffer.data(), file_size);
+
+	file.close();
+
+	return buffer;
+}
+
+void Engine::CreateVulkanInstance()
 {
 	VkResult result;
 
@@ -33,8 +58,8 @@ void Engine::CreateVulkanInstance(const std::vector<const char*>& extensions, ui
 	VkInstanceCreateInfo create_info = {};
 	create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
 	create_info.enabledLayerCount = 0;
-	create_info.enabledExtensionCount = num_extensions;
-	create_info.ppEnabledExtensionNames = extensions.data();
+	create_info.enabledExtensionCount = m_SDLExtensionCount;
+	create_info.ppEnabledExtensionNames = m_SDLExtensions.data();
 
 #ifdef _DEBUG
 
@@ -241,12 +266,12 @@ void Engine::SetupVulkan()
 
 		// Create Swap Chain
 		uint32_t image_count = capabilities.minImageCount + 1;
-		
+
 		if (capabilities.maxImageCount > 0 && image_count > capabilities.maxImageCount)
 		{
 			image_count = capabilities.maxImageCount;
 		}
-		
+
 		VkSwapchainCreateInfoKHR create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
 		create_info.surface = m_Surface;
@@ -257,9 +282,239 @@ void Engine::SetupVulkan()
 		create_info.imageArrayLayers = 1;
 		create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 		create_info.presentMode = selected_present_mode;
+		create_info.preTransform = capabilities.currentTransform;
+		create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+		create_info.clipped = VK_TRUE;
+		create_info.oldSwapchain = VK_NULL_HANDLE;
 
-		result = vkCreateSwapchainKHR(m_Device, &create_info, nullptr, &m_SwapChain);
+		m_SwapchainImageFormat = selected_format.format;
+		m_SwapchainExtent = extent;
+
+		result = vkCreateSwapchainKHR(m_Device, &create_info, nullptr, &m_Swapchain);
 		check_vk_result(result);
+
+		uint32_t swapchain_image_count;
+		result = vkGetSwapchainImagesKHR(m_Device, m_Swapchain, &swapchain_image_count, nullptr);
+		check_vk_result(result);
+
+		m_SwapchainImages.resize(swapchain_image_count);
+		result = vkGetSwapchainImagesKHR(m_Device, m_Swapchain, &swapchain_image_count, m_SwapchainImages.data());
+		check_vk_result(result);
+
+		m_SwapchainImageViews.resize(swapchain_image_count);
+	}
+
+	// Create Image Views
+	{
+		for (size_t i = 0; i < m_SwapchainImages.size(); i++)
+		{
+			VkImageViewCreateInfo create_info = {};
+			create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+			create_info.image = m_SwapchainImages[i];
+			create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+			create_info.format = m_SwapchainImageFormat;
+			
+			create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+			create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+			create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+			create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+
+			create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			create_info.subresourceRange.baseMipLevel = 0;
+			create_info.subresourceRange.levelCount = 1;
+			create_info.subresourceRange.baseArrayLayer = 0;
+			create_info.subresourceRange.layerCount = 1;
+
+			result = vkCreateImageView(m_Device, &create_info, nullptr, &m_SwapchainImageViews[i]);
+			check_vk_result(result);
+		}
+	}
+}
+
+void Engine::SetupVulkanGraphicsPipeline()
+{
+	VkResult result;
+
+	// Read Shader Binaries
+	auto vert_shader_code = ReadFile("assets/shaders/vert.spv");
+	auto frag_shader_code = ReadFile("assets/shaders/frag.spv");
+
+	// Vertex Shader Module Create Info
+	VkShaderModule vert_shader_module;
+	VkShaderModule frag_shader_module;
+	{
+		VkShaderModuleCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		create_info.codeSize = vert_shader_code.size();
+		create_info.pCode = reinterpret_cast<const uint32_t*> (vert_shader_code.data());
+		result = vkCreateShaderModule(m_Device, &create_info, nullptr, &vert_shader_module);
+		check_vk_result(result);
+	}
+
+	// Fragment Shader Module Create Info
+	{
+		VkShaderModuleCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+		create_info.codeSize = frag_shader_code.size();
+		create_info.pCode = reinterpret_cast<const uint32_t*> (frag_shader_code.data());
+		result = vkCreateShaderModule(m_Device, &create_info, nullptr, &frag_shader_module);
+		check_vk_result(result);
+	}
+
+	// Vertex Shader Stage Create Info
+	std::array<VkPipelineShaderStageCreateInfo, 2> shader_stages;
+	{
+		VkPipelineShaderStageCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		create_info.module = vert_shader_module;
+		create_info.pName = "main";
+
+		shader_stages[0] = create_info;
+	}
+
+	// Fragment Shader Stage Create Info
+	{
+		VkPipelineShaderStageCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+		create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		create_info.module = frag_shader_module;
+		create_info.pName = "main";
+
+		shader_stages[1] = create_info;
+	}
+
+	// Vertex Input Create Info
+	VkPipelineVertexInputStateCreateInfo vertex_input = {};
+	vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+	vertex_input.vertexBindingDescriptionCount = 0;
+	vertex_input.pVertexBindingDescriptions = nullptr;
+	vertex_input.vertexAttributeDescriptionCount = 0;
+	vertex_input.pVertexAttributeDescriptions = nullptr;
+
+	// Input Assembly Create Info
+	VkPipelineInputAssemblyStateCreateInfo input_assembly = {};
+	input_assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+	input_assembly.primitiveRestartEnable = VK_FALSE;
+
+	/* Viewport and Scissor (as dynamic part of the pipeline)
+	std::vector<VkDynamicState> dynamic_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+
+	VkPipelineDynamicStateCreateInfo dynamic_state = {};
+	dynamic_state.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamic_state.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size());
+	dynamic_state.pDynamicStates = dynamic_states.data();
+
+	VkPipelineViewportStateCreateInfo viewport_state = {};
+	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewport_state.viewportCount = 1;
+	viewport_state.scissorCount = 1;
+	*/
+
+	// Viewport and Scissors (as static part of the pipeline)
+	VkViewport viewport = {};
+	viewport.x = 0.0f;
+	viewport.y = 0.0f;
+	viewport.width = (float)m_SwapchainExtent.width;
+	viewport.height = (float)m_SwapchainExtent.height;
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+
+	VkRect2D scissor = {};
+	scissor.offset = {0, 0};
+	scissor.extent = m_SwapchainExtent;
+
+	VkPipelineViewportStateCreateInfo viewport_state = {};
+	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewport_state.viewportCount = 1;
+	viewport_state.pViewports = &viewport;
+	viewport_state.scissorCount = 1;
+	viewport_state.pScissors = &scissor;
+
+	// Rasterizer Create Info
+	VkPipelineRasterizationStateCreateInfo rasterizer = {};
+	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterizer.depthClampEnable = VK_FALSE;
+	rasterizer.rasterizerDiscardEnable = VK_FALSE;
+	rasterizer.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterizer.lineWidth = 1.0f;
+	rasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+	rasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+	rasterizer.depthBiasEnable = VK_FALSE;
+	rasterizer.depthBiasConstantFactor = 0.0f;
+	rasterizer.depthBiasClamp = 0.0f;
+	rasterizer.depthBiasSlopeFactor = 0.0f;
+
+	// Multisampling Create Info (Disabled)
+	VkPipelineMultisampleStateCreateInfo multisample = {};
+	multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisample.sampleShadingEnable = VK_FALSE;
+	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+	multisample.minSampleShading = 1.0f;
+	multisample.pSampleMask = nullptr;
+	multisample.alphaToCoverageEnable = VK_FALSE;
+	multisample.alphaToOneEnable = VK_FALSE;
+
+	// Color Blending Attachment State and Create Info
+	VkPipelineColorBlendAttachmentState color_blend_attachment = {};
+	color_blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+	color_blend_attachment.blendEnable = VK_FALSE;
+	color_blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+	color_blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+	color_blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+	color_blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+	color_blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+	color_blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+	VkPipelineColorBlendStateCreateInfo color_blend = {};
+	color_blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	color_blend.logicOpEnable = VK_FALSE;
+	color_blend.logicOp = VK_LOGIC_OP_COPY;
+	color_blend.attachmentCount = 1;
+	color_blend.pAttachments = &color_blend_attachment;
+	color_blend.blendConstants[0] = 0.0f;
+	color_blend.blendConstants[1] = 0.0f;
+	color_blend.blendConstants[2] = 0.0f;
+	color_blend.blendConstants[3] = 0.0f;
+
+	// Create Pipeline Layout
+	{
+		VkPipelineLayoutCreateInfo pipeline_layout = {};
+		pipeline_layout.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+		pipeline_layout.setLayoutCount = 0;
+		pipeline_layout.pSetLayouts = nullptr;
+		pipeline_layout.pPushConstantRanges = 0;
+		pipeline_layout.pPushConstantRanges = nullptr;
+		
+		result = vkCreatePipelineLayout(m_Device, &pipeline_layout, nullptr, &m_PipelineLayout);
+		check_vk_result(result);
+	}
+	
+	vkDestroyShaderModule(m_Device, vert_shader_module, nullptr);
+	vkDestroyShaderModule(m_Device, frag_shader_module, nullptr);
+}
+
+void Engine::SetupSDL()
+{
+	SDL_Init(SDL_INIT_VIDEO);
+
+	m_WindowHandle = SDL_CreateWindow(m_Specification.Name.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, m_Specification.Width, m_Specification.Height, SDL_WINDOW_VULKAN);
+
+	// Get the names of the Vulkan instance extensions needed to create a surface
+	if (SDL_Vulkan_GetInstanceExtensions(m_WindowHandle, &m_SDLExtensionCount, nullptr) == SDL_FALSE)
+		throw std::runtime_error("Error getting Vulkan instance extensions.");
+
+	m_SDLExtensions.resize(m_SDLExtensionCount);
+	if (SDL_Vulkan_GetInstanceExtensions(m_WindowHandle, &m_SDLExtensionCount, m_SDLExtensions.data()) == SDL_FALSE)
+		throw std::runtime_error("Error getting Vulkan instance extensions.");
+}
+
+void Engine::CreateSDLSurface()
+{
+	if (SDL_Vulkan_CreateSurface(m_WindowHandle, m_Instance, &m_Surface) == SDL_FALSE)
+	{
+		throw std::runtime_error("Error creating Vulkan Surface.");
 	}
 }
 
@@ -285,31 +540,15 @@ Engine& Engine::Get()
 
 void Engine::Init()
 {
-	SDL_Init(SDL_INIT_VIDEO);
-
-	m_WindowHandle = SDL_CreateWindow(m_Specification.Name.c_str(), SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, m_Specification.Width, m_Specification.Height, SDL_WINDOW_VULKAN);
-
-	// Get the names of the Vulkan instance extensions needed to create a surface
-	uint32_t num_extensions;
-	if (SDL_Vulkan_GetInstanceExtensions(m_WindowHandle, &num_extensions, nullptr) == SDL_FALSE)
-		throw std::runtime_error("Error getting Vulkan instance extensions.");
-
-	std::vector<const char*> extensions(num_extensions);
-	if (SDL_Vulkan_GetInstanceExtensions(m_WindowHandle, &num_extensions, extensions.data()) == SDL_FALSE)
-		throw std::runtime_error("Error getting Vulkan instance extensions.");
-
-	CreateVulkanInstance(extensions, num_extensions);
-
-	if (SDL_Vulkan_CreateSurface(m_WindowHandle, m_Instance, &m_Surface) == SDL_FALSE)
-		throw std::runtime_error("Error creating Vulkan Surface.");
-
+	SetupSDL();
+	CreateVulkanInstance();
+	CreateSDLSurface();
 	SetupVulkan();
+	SetupVulkanGraphicsPipeline();
 }
 
 void Engine::Run()
 {
-	m_Running = true;
-
 	SDL_Surface* screenSurface = SDL_GetWindowSurface(m_WindowHandle);
 
 	SDL_FillRect(screenSurface, NULL, SDL_MapRGB(screenSurface->format, 0, 255, 0));
@@ -330,8 +569,14 @@ void Engine::Run()
 
 void Engine::Shutdown()
 {
+	for (VkImageView image_view : m_SwapchainImageViews)
+	{
+		vkDestroyImageView(m_Device, image_view, nullptr);
+	}
+
+	vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
+	vkDestroySwapchainKHR(m_Device, m_Swapchain, nullptr);
 	vkDestroySurfaceKHR(m_Instance, m_Surface, nullptr);
-	vkDestroySwapchainKHR(m_Device, m_SwapChain, nullptr);
 	vkDestroyDevice(m_Device, nullptr);
 	vkDestroyInstance(m_Instance, nullptr);
 

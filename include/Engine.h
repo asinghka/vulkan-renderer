@@ -28,12 +28,18 @@ public:
 private:
 	void Init();
 	void Shutdown();
-	void CreateVulkanInstance(const std::vector<const char*>& extensions, uint32_t num_extensions);
+	void CreateVulkanInstance();
+	void SetupSDL();
+	void CreateSDLSurface();
 	void SetupVulkan();
+	void SetupVulkanGraphicsPipeline();
 
 private:
 	EngineSpecification m_Specification;
 	SDL_Window* m_WindowHandle = nullptr;
+
+	std::vector<const char*> m_SDLExtensions;
+	uint32_t m_SDLExtensionCount;
 
 	VkInstance				m_Instance = VK_NULL_HANDLE;
 	VkSurfaceKHR			m_Surface = VK_NULL_HANDLE;
@@ -41,8 +47,11 @@ private:
 	uint32_t				m_QueueFamily = UINT32_MAX;
 	VkDevice				m_Device = VK_NULL_HANDLE;
 	VkQueue					m_Queue = VK_NULL_HANDLE;
-	VkSwapchainKHR			m_SwapChain = VK_NULL_HANDLE;
+	VkSwapchainKHR			m_Swapchain = VK_NULL_HANDLE;
+	VkFormat				m_SwapchainImageFormat;
+	VkExtent2D				m_SwapchainExtent;
+	VkPipelineLayout		m_PipelineLayout = VK_NULL_HANDLE;
 
-
-	bool m_Running = false;
+	std::vector<VkImage>	m_SwapchainImages;
+	std::vector<VkImageView> m_SwapchainImageViews;
 };
