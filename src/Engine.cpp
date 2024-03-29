@@ -331,7 +331,41 @@ void Engine::SetupVulkan()
 	}
 }
 
-void Engine::SetupVulkanGraphicsPipeline()
+void Engine::CreateVulkanRenderPass()
+{
+	VkResult result;
+
+	VkAttachmentDescription color_attachment = {};
+	color_attachment.format = m_SwapchainImageFormat;
+	color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+	color_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	color_attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	color_attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	color_attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	color_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	color_attachment.finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+	VkAttachmentReference color_attachment_ref = {};
+	color_attachment_ref.attachment = 0;
+	color_attachment_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	VkSubpassDescription subpass = {};
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &color_attachment_ref;
+
+	VkRenderPassCreateInfo create_info = {};
+	create_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	create_info.attachmentCount = 1;
+	create_info.pAttachments = &color_attachment;
+	create_info.subpassCount = 1;
+	create_info.pSubpasses = &subpass;
+
+	result = vkCreateRenderPass(m_Device, &create_info, nullptr, &m_Renderpass);
+	check_vk_result(result);	
+}
+
+void Engine::CreateVulkanGraphicsPipeline()
 {
 	VkResult result;
 
@@ -362,7 +396,7 @@ void Engine::SetupVulkanGraphicsPipeline()
 	}
 
 	// Vertex Shader Stage Create Info
-	std::array<VkPipelineShaderStageCreateInfo, 2> shader_stages;
+	VkPipelineShaderStageCreateInfo shader_stages[2];
 	{
 		VkPipelineShaderStageCreateInfo create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -377,7 +411,7 @@ void Engine::SetupVulkanGraphicsPipeline()
 	{
 		VkPipelineShaderStageCreateInfo create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-		create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
+		create_info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
 		create_info.module = frag_shader_module;
 		create_info.pName = "main";
 
@@ -398,7 +432,7 @@ void Engine::SetupVulkanGraphicsPipeline()
 	input_assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	input_assembly.primitiveRestartEnable = VK_FALSE;
 
-	/* Viewport and Scissor (as dynamic part of the pipeline)
+	// Viewport and Scissor (as dynamic part of the pipeline)
 	std::vector<VkDynamicState> dynamic_states = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
 
 	VkPipelineDynamicStateCreateInfo dynamic_state = {};
@@ -410,9 +444,8 @@ void Engine::SetupVulkanGraphicsPipeline()
 	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	viewport_state.viewportCount = 1;
 	viewport_state.scissorCount = 1;
-	*/
-
-	// Viewport and Scissors (as static part of the pipeline)
+	
+	/* Viewport and Scissors(as static part of the pipeline)
 	VkViewport viewport = {};
 	viewport.x = 0.0f;
 	viewport.y = 0.0f;
@@ -424,13 +457,12 @@ void Engine::SetupVulkanGraphicsPipeline()
 	VkRect2D scissor = {};
 	scissor.offset = {0, 0};
 	scissor.extent = m_SwapchainExtent;
-
+	
 	VkPipelineViewportStateCreateInfo viewport_state = {};
 	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	viewport_state.viewportCount = 1;
-	viewport_state.pViewports = &viewport;
 	viewport_state.scissorCount = 1;
-	viewport_state.pScissors = &scissor;
+	*/
 
 	// Rasterizer Create Info
 	VkPipelineRasterizationStateCreateInfo rasterizer = {};
@@ -491,6 +523,30 @@ void Engine::SetupVulkanGraphicsPipeline()
 		check_vk_result(result);
 	}
 	
+	// Create Graphics Pipeline
+	{
+		VkGraphicsPipelineCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+		create_info.stageCount = 2;
+		create_info.pStages = shader_stages;
+		create_info.pVertexInputState = &vertex_input;
+		create_info.pInputAssemblyState = &input_assembly;
+		create_info.pViewportState = &viewport_state;
+		create_info.pRasterizationState = &rasterizer;
+		create_info.pMultisampleState = &multisample;
+		create_info.pDepthStencilState = nullptr;
+		create_info.pColorBlendState = &color_blend;
+		create_info.pDynamicState = &dynamic_state;
+		create_info.layout = m_PipelineLayout;
+		create_info.renderPass = m_Renderpass;
+		create_info.subpass = 0;
+		create_info.basePipelineHandle = VK_NULL_HANDLE;
+		create_info.basePipelineIndex = -1;
+
+		result = vkCreateGraphicsPipelines(m_Device, VK_NULL_HANDLE, 1, &create_info, nullptr, &m_Pipeline);
+		check_vk_result(result);
+	}
+
 	vkDestroyShaderModule(m_Device, vert_shader_module, nullptr);
 	vkDestroyShaderModule(m_Device, frag_shader_module, nullptr);
 }
@@ -503,11 +559,15 @@ void Engine::SetupSDL()
 
 	// Get the names of the Vulkan instance extensions needed to create a surface
 	if (SDL_Vulkan_GetInstanceExtensions(m_WindowHandle, &m_SDLExtensionCount, nullptr) == SDL_FALSE)
+	{
 		throw std::runtime_error("Error getting Vulkan instance extensions.");
+	}
 
 	m_SDLExtensions.resize(m_SDLExtensionCount);
 	if (SDL_Vulkan_GetInstanceExtensions(m_WindowHandle, &m_SDLExtensionCount, m_SDLExtensions.data()) == SDL_FALSE)
+	{
 		throw std::runtime_error("Error getting Vulkan instance extensions.");
+	}
 }
 
 void Engine::CreateSDLSurface()
@@ -544,7 +604,8 @@ void Engine::Init()
 	CreateVulkanInstance();
 	CreateSDLSurface();
 	SetupVulkan();
-	SetupVulkanGraphicsPipeline();
+	CreateVulkanRenderPass();
+	CreateVulkanGraphicsPipeline();
 }
 
 void Engine::Run()
@@ -574,7 +635,9 @@ void Engine::Shutdown()
 		vkDestroyImageView(m_Device, image_view, nullptr);
 	}
 
+	vkDestroyPipeline(m_Device, m_Pipeline, nullptr);
 	vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
+	vkDestroyRenderPass(m_Device, m_Renderpass, nullptr);
 	vkDestroySwapchainKHR(m_Device, m_Swapchain, nullptr);
 	vkDestroySurfaceKHR(m_Instance, m_Surface, nullptr);
 	vkDestroyDevice(m_Device, nullptr);

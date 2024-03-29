@@ -32,7 +32,8 @@ private:
 	void SetupSDL();
 	void CreateSDLSurface();
 	void SetupVulkan();
-	void SetupVulkanGraphicsPipeline();
+	void CreateVulkanRenderPass();
+	void CreateVulkanGraphicsPipeline();
 
 private:
 	EngineSpecification m_Specification;
@@ -51,6 +52,8 @@ private:
 	VkFormat				m_SwapchainImageFormat;
 	VkExtent2D				m_SwapchainExtent;
 	VkPipelineLayout		m_PipelineLayout = VK_NULL_HANDLE;
+	VkRenderPass			m_Renderpass = VK_NULL_HANDLE;
+	VkPipeline				m_Pipeline = VK_NULL_HANDLE;
 
 	std::vector<VkImage>	m_SwapchainImages;
 	std::vector<VkImageView> m_SwapchainImageViews;
