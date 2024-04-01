@@ -18,7 +18,7 @@
 
 static Engine* s_Instance = nullptr;
 
-void check_vk_result(const VkResult result)
+static void check_vk_result(const VkResult result)
 {
 	if (result == 0)
 	{
@@ -335,6 +335,14 @@ void Engine::CreateVulkanRenderPass()
 {
 	VkResult result;
 
+	VkSubpassDependency dependency = {};
+	dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+	dependency.dstSubpass = 0;
+	dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependency.srcAccessMask = 0;
+	dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+	dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
 	VkAttachmentDescription color_attachment = {};
 	color_attachment.format = m_SwapchainImageFormat;
 	color_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -360,6 +368,8 @@ void Engine::CreateVulkanRenderPass()
 	create_info.pAttachments = &color_attachment;
 	create_info.subpassCount = 1;
 	create_info.pSubpasses = &subpass;
+	create_info.dependencyCount = 1;
+	create_info.pDependencies = &dependency;
 
 	result = vkCreateRenderPass(m_Device, &create_info, nullptr, &m_Renderpass);
 	check_vk_result(result);	
@@ -445,25 +455,6 @@ void Engine::CreateVulkanGraphicsPipeline()
 	viewport_state.viewportCount = 1;
 	viewport_state.scissorCount = 1;
 	
-	/* Viewport and Scissors(as static part of the pipeline)
-	VkViewport viewport = {};
-	viewport.x = 0.0f;
-	viewport.y = 0.0f;
-	viewport.width = (float)m_SwapchainExtent.width;
-	viewport.height = (float)m_SwapchainExtent.height;
-	viewport.minDepth = 0.0f;
-	viewport.maxDepth = 1.0f;
-
-	VkRect2D scissor = {};
-	scissor.offset = {0, 0};
-	scissor.extent = m_SwapchainExtent;
-	
-	VkPipelineViewportStateCreateInfo viewport_state = {};
-	viewport_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
-	viewport_state.viewportCount = 1;
-	viewport_state.scissorCount = 1;
-	*/
-
 	// Rasterizer Create Info
 	VkPipelineRasterizationStateCreateInfo rasterizer = {};
 	rasterizer.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
@@ -551,6 +542,191 @@ void Engine::CreateVulkanGraphicsPipeline()
 	vkDestroyShaderModule(m_Device, frag_shader_module, nullptr);
 }
 
+void Engine::CreateVulkanFramebuffers()
+{
+	VkResult result;
+
+	m_SwapchainFramebuffers.resize(m_SwapchainImageViews.size());
+
+	for (size_t i = 0; i < m_SwapchainImageViews.size(); i++)
+	{
+		VkImageView attachments[] = { m_SwapchainImageViews[i] };
+
+		VkFramebufferCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+		create_info.renderPass = m_Renderpass;
+		create_info.attachmentCount = 1;
+		create_info.pAttachments = attachments;
+		create_info.width = m_SwapchainExtent.width;
+		create_info.height = m_SwapchainExtent.height;
+		create_info.layers = 1;
+
+		result = vkCreateFramebuffer(m_Device, &create_info, nullptr, &m_SwapchainFramebuffers[i]);
+		check_vk_result(result);
+	}
+}
+
+void Engine::CreateVulkanCommandPool()
+{
+	VkResult result;
+
+	VkCommandPoolCreateInfo create_info = {};
+	create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+	create_info.queueFamilyIndex = m_QueueFamily;
+
+	result = vkCreateCommandPool(m_Device, &create_info, nullptr, &m_CommandPool);
+	check_vk_result(result);
+
+}
+
+void Engine::CreateVulkanCommandBuffer()
+{
+	VkResult result;
+	
+	VkCommandBufferAllocateInfo alloc_info = {};
+	alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	alloc_info.commandPool = m_CommandPool;
+	alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	alloc_info.commandBufferCount = 1;
+
+	result = vkAllocateCommandBuffers(m_Device, &alloc_info, &m_CommandBuffer);
+	check_vk_result(result);
+}
+
+void Engine::RecordCommandBuffer(VkCommandBuffer buffer, uint32_t image_index)
+{
+	VkResult result;
+	
+	// Start Command Buffer
+	{
+		VkCommandBufferBeginInfo info = {};
+		info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+		info.flags = 0;
+		info.pInheritanceInfo = nullptr;
+
+		result = vkBeginCommandBuffer(buffer, &info);
+		check_vk_result(result);
+	}
+	
+	// Start Render Pass
+	{
+		VkRenderPassBeginInfo info = {};
+		info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+		info.renderPass = m_Renderpass;
+		info.framebuffer = m_SwapchainFramebuffers[image_index];
+		info.renderArea.offset = { 0, 0 };
+		info.renderArea.extent = m_SwapchainExtent;
+		
+		VkClearValue clear_color = { {{0.0f, 0.0f, 0.0f, 1.0f}} };
+		info.clearValueCount = 1;
+		info.pClearValues = &clear_color;
+
+		vkCmdBeginRenderPass(m_CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+	}
+
+	vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
+
+	// Set Viewport and Scissor (dynamic)
+	VkViewport viewport = {};
+	viewport.x = 0.0f;
+	viewport.y = 0.0f;
+	viewport.width = static_cast<float>(m_SwapchainExtent.width);
+	viewport.height = static_cast<float>(m_SwapchainExtent.height);
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+	vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
+
+	VkRect2D scissor = {};
+	scissor.offset = { 0, 0 };
+	scissor.extent = m_SwapchainExtent;
+	vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+
+	vkCmdDraw(m_CommandBuffer, 3, 1, 0, 0);
+
+	vkCmdEndRenderPass(m_CommandBuffer);
+
+	result = vkEndCommandBuffer(m_CommandBuffer);
+	check_vk_result(result);
+}
+
+void Engine::CreateVulkanSyncObjects()
+{
+	VkResult result;
+
+	// Create Semaphores (Synchronization on the GPU)
+	{
+		VkSemaphoreCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+		result = vkCreateSemaphore(m_Device, &create_info, nullptr, &m_ImageAvailableSemaphore);
+		check_vk_result(result);
+
+		result = vkCreateSemaphore(m_Device, &create_info, nullptr, &m_RenderFinishedSemaphore);
+		check_vk_result(result);
+	}
+
+	// Create Fence (Synchronization on the Host)
+	{
+		VkFenceCreateInfo create_info = {};
+		create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+		result = vkCreateFence(m_Device, &create_info, nullptr, &m_InFlightFence);
+		check_vk_result(result);
+	}
+}
+
+void Engine::RenderFrame()
+{
+	VkResult result;
+
+	vkWaitForFences(m_Device, 1, &m_InFlightFence, VK_TRUE, UINT64_MAX);
+	vkResetFences(m_Device, 1, &m_InFlightFence);
+
+	uint32_t image_index;
+	result = vkAcquireNextImageKHR(m_Device, m_Swapchain, UINT64_MAX, m_ImageAvailableSemaphore, VK_NULL_HANDLE, &image_index);
+	check_vk_result(result);
+
+	vkResetCommandBuffer(m_CommandBuffer, 0);
+	RecordCommandBuffer(m_CommandBuffer, image_index);
+
+	// Submitting the command buffer
+	VkSubmitInfo submit_info = {};
+	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+	VkSemaphore wait_semaphores[] = {m_ImageAvailableSemaphore};
+	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
+	submit_info.waitSemaphoreCount = 1;
+	submit_info.pWaitSemaphores = wait_semaphores;
+	submit_info.pWaitDstStageMask = wait_stages;
+	submit_info.commandBufferCount = 1;
+	submit_info.pCommandBuffers = &m_CommandBuffer;
+		
+	VkSemaphore signal_semaphores[] = { m_RenderFinishedSemaphore };
+	submit_info.signalSemaphoreCount = 1;
+	submit_info.pSignalSemaphores = signal_semaphores;
+
+	result = vkQueueSubmit(m_Queue, 1, &submit_info, m_InFlightFence);
+	check_vk_result(result);
+
+
+	// Present Image
+	VkPresentInfoKHR present_info = {};
+	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	present_info.waitSemaphoreCount = 1;
+	present_info.pWaitSemaphores = signal_semaphores;
+	
+	VkSwapchainKHR swapchains[] = { m_Swapchain };
+	present_info.swapchainCount = 1;
+	present_info.pSwapchains = swapchains;
+	present_info.pImageIndices = &image_index;
+	present_info.pResults = nullptr;
+
+	result = vkQueuePresentKHR(m_Queue, &present_info);
+	check_vk_result(result);
+}
+
 void Engine::SetupSDL()
 {
 	SDL_Init(SDL_INIT_VIDEO);
@@ -606,35 +782,44 @@ void Engine::Init()
 	SetupVulkan();
 	CreateVulkanRenderPass();
 	CreateVulkanGraphicsPipeline();
+	CreateVulkanFramebuffers();
+	CreateVulkanCommandPool();
+	CreateVulkanCommandBuffer();
+	CreateVulkanSyncObjects();
 }
 
 void Engine::Run()
 {
-	SDL_Surface* screenSurface = SDL_GetWindowSurface(m_WindowHandle);
-
-	SDL_FillRect(screenSurface, NULL, SDL_MapRGB(screenSurface->format, 0, 255, 0));
-	SDL_UpdateWindowSurface(m_WindowHandle);
-
 	SDL_Event e; 
 	bool quit = false; 
 	
 	while (!quit)
 	{
-		while (SDL_PollEvent(&e))
-		{
-			if (e.type == SDL_QUIT)
-				quit = true;
-		}
+		SDL_PollEvent(&e);
+		if (e.type == SDL_QUIT)
+			quit = true;
+		RenderFrame();
 	}
+
+	vkDeviceWaitIdle(m_Device);
 }
 
 void Engine::Shutdown()
 {
+	for (VkFramebuffer framebuffer : m_SwapchainFramebuffers)
+	{
+		vkDestroyFramebuffer(m_Device, framebuffer, nullptr);
+	}
+
 	for (VkImageView image_view : m_SwapchainImageViews)
 	{
 		vkDestroyImageView(m_Device, image_view, nullptr);
 	}
 
+	vkDestroySemaphore(m_Device, m_ImageAvailableSemaphore, nullptr);
+	vkDestroySemaphore(m_Device, m_RenderFinishedSemaphore, nullptr);
+	vkDestroyFence(m_Device, m_InFlightFence, nullptr);
+	vkDestroyCommandPool(m_Device, m_CommandPool, nullptr);
 	vkDestroyPipeline(m_Device, m_Pipeline, nullptr);
 	vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
 	vkDestroyRenderPass(m_Device, m_Renderpass, nullptr);
