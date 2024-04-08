@@ -36,7 +36,7 @@ private:
 	void CreateVulkanGraphicsPipeline();
 	void CreateVulkanFramebuffers();
 	void CreateVulkanCommandPool();
-	void CreateVulkanCommandBuffer();
+	void CreateVulkanCommandBuffers();
 	void CreateVulkanSyncObjects();
 
 	void RecordCommandBuffer(VkCommandBuffer buffer, uint32_t image_index);
@@ -62,12 +62,15 @@ private:
 	VkRenderPass			m_Renderpass = VK_NULL_HANDLE;
 	VkPipeline				m_Pipeline = VK_NULL_HANDLE;
 	VkCommandPool			m_CommandPool = VK_NULL_HANDLE;
-	VkCommandBuffer			m_CommandBuffer = VK_NULL_HANDLE;
-	VkSemaphore				m_ImageAvailableSemaphore = VK_NULL_HANDLE;
-	VkSemaphore				m_RenderFinishedSemaphore = VK_NULL_HANDLE;
-	VkFence					m_InFlightFence = VK_NULL_HANDLE;
+
+	std::vector<VkCommandBuffer>	m_CommandBuffers;
+	std::vector<VkSemaphore>		m_SemaphoresImageAvailable;
+	std::vector<VkSemaphore>		m_SemaphoresRenderFinished;
+	std::vector<VkFence>			m_FencesInFlight;
 
 	std::vector<VkImage>		m_SwapchainImages;
 	std::vector<VkImageView>	m_SwapchainImageViews;
 	std::vector<VkFramebuffer>	m_SwapchainFramebuffers;
+
+	uint32_t m_CurrentFrame = 0;
 };

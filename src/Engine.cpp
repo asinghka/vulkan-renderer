@@ -15,6 +15,7 @@
 #define UINT32_MAX	((uint32_t)-1)
 #endif
 
+const int MAX_FRAMES_IN_FLIGHT = 2;
 
 static Engine* s_Instance = nullptr;
 
@@ -580,17 +581,19 @@ void Engine::CreateVulkanCommandPool()
 
 }
 
-void Engine::CreateVulkanCommandBuffer()
+void Engine::CreateVulkanCommandBuffers()
 {
 	VkResult result;
 	
+	m_CommandBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+
 	VkCommandBufferAllocateInfo alloc_info = {};
 	alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
 	alloc_info.commandPool = m_CommandPool;
 	alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-	alloc_info.commandBufferCount = 1;
+	alloc_info.commandBufferCount = (uint32_t) m_CommandBuffers.size();
 
-	result = vkAllocateCommandBuffers(m_Device, &alloc_info, &m_CommandBuffer);
+	result = vkAllocateCommandBuffers(m_Device, &alloc_info, m_CommandBuffers.data());
 	check_vk_result(result);
 }
 
@@ -622,10 +625,10 @@ void Engine::RecordCommandBuffer(VkCommandBuffer buffer, uint32_t image_index)
 		info.clearValueCount = 1;
 		info.pClearValues = &clear_color;
 
-		vkCmdBeginRenderPass(m_CommandBuffer, &info, VK_SUBPASS_CONTENTS_INLINE);
+		vkCmdBeginRenderPass(buffer, &info, VK_SUBPASS_CONTENTS_INLINE);
 	}
 
-	vkCmdBindPipeline(m_CommandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
+	vkCmdBindPipeline(buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, m_Pipeline);
 
 	// Set Viewport and Scissor (dynamic)
 	VkViewport viewport = {};
@@ -635,18 +638,18 @@ void Engine::RecordCommandBuffer(VkCommandBuffer buffer, uint32_t image_index)
 	viewport.height = static_cast<float>(m_SwapchainExtent.height);
 	viewport.minDepth = 0.0f;
 	viewport.maxDepth = 1.0f;
-	vkCmdSetViewport(m_CommandBuffer, 0, 1, &viewport);
+	vkCmdSetViewport(buffer, 0, 1, &viewport);
 
 	VkRect2D scissor = {};
 	scissor.offset = { 0, 0 };
 	scissor.extent = m_SwapchainExtent;
-	vkCmdSetScissor(m_CommandBuffer, 0, 1, &scissor);
+	vkCmdSetScissor(buffer, 0, 1, &scissor);
 
-	vkCmdDraw(m_CommandBuffer, 3, 1, 0, 0);
+	vkCmdDraw(buffer, 3, 1, 0, 0);
 
-	vkCmdEndRenderPass(m_CommandBuffer);
+	vkCmdEndRenderPass(buffer);
 
-	result = vkEndCommandBuffer(m_CommandBuffer);
+	result = vkEndCommandBuffer(buffer);
 	check_vk_result(result);
 }
 
@@ -654,16 +657,23 @@ void Engine::CreateVulkanSyncObjects()
 {
 	VkResult result;
 
+	m_SemaphoresImageAvailable.resize(MAX_FRAMES_IN_FLIGHT);
+	m_SemaphoresRenderFinished.resize(MAX_FRAMES_IN_FLIGHT);
+	m_FencesInFlight.resize(MAX_FRAMES_IN_FLIGHT);
+
 	// Create Semaphores (Synchronization on the GPU)
 	{
 		VkSemaphoreCreateInfo create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-		result = vkCreateSemaphore(m_Device, &create_info, nullptr, &m_ImageAvailableSemaphore);
-		check_vk_result(result);
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		{
+			result = vkCreateSemaphore(m_Device, &create_info, nullptr, &m_SemaphoresImageAvailable[i]);
+			check_vk_result(result);
 
-		result = vkCreateSemaphore(m_Device, &create_info, nullptr, &m_RenderFinishedSemaphore);
-		check_vk_result(result);
+			result = vkCreateSemaphore(m_Device, &create_info, nullptr, &m_SemaphoresRenderFinished[i]);
+			check_vk_result(result);
+		}
 	}
 
 	// Create Fence (Synchronization on the Host)
@@ -672,8 +682,11 @@ void Engine::CreateVulkanSyncObjects()
 		create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 		create_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
 
-		result = vkCreateFence(m_Device, &create_info, nullptr, &m_InFlightFence);
-		check_vk_result(result);
+		for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+		{
+			result = vkCreateFence(m_Device, &create_info, nullptr, &m_FencesInFlight[i]);
+			check_vk_result(result);
+		}
 	}
 }
 
@@ -681,33 +694,33 @@ void Engine::RenderFrame()
 {
 	VkResult result;
 
-	vkWaitForFences(m_Device, 1, &m_InFlightFence, VK_TRUE, UINT64_MAX);
-	vkResetFences(m_Device, 1, &m_InFlightFence);
+	vkWaitForFences(m_Device, 1, &m_FencesInFlight[m_CurrentFrame], VK_TRUE, UINT64_MAX);
+	vkResetFences(m_Device, 1, &m_FencesInFlight[m_CurrentFrame]);
 
 	uint32_t image_index;
-	result = vkAcquireNextImageKHR(m_Device, m_Swapchain, UINT64_MAX, m_ImageAvailableSemaphore, VK_NULL_HANDLE, &image_index);
+	result = vkAcquireNextImageKHR(m_Device, m_Swapchain, UINT64_MAX, m_SemaphoresImageAvailable[m_CurrentFrame], VK_NULL_HANDLE, &image_index);
 	check_vk_result(result);
 
-	vkResetCommandBuffer(m_CommandBuffer, 0);
-	RecordCommandBuffer(m_CommandBuffer, image_index);
+	vkResetCommandBuffer(m_CommandBuffers[m_CurrentFrame], 0);
+	RecordCommandBuffer(m_CommandBuffers[m_CurrentFrame], image_index);
 
 	// Submitting the command buffer
 	VkSubmitInfo submit_info = {};
 	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-	VkSemaphore wait_semaphores[] = {m_ImageAvailableSemaphore};
+	VkSemaphore wait_semaphores[] = {m_SemaphoresImageAvailable[m_CurrentFrame] };
 	VkPipelineStageFlags wait_stages[] = { VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT };
 	submit_info.waitSemaphoreCount = 1;
 	submit_info.pWaitSemaphores = wait_semaphores;
 	submit_info.pWaitDstStageMask = wait_stages;
 	submit_info.commandBufferCount = 1;
-	submit_info.pCommandBuffers = &m_CommandBuffer;
+	submit_info.pCommandBuffers = &m_CommandBuffers[m_CurrentFrame];
 		
-	VkSemaphore signal_semaphores[] = { m_RenderFinishedSemaphore };
+	VkSemaphore signal_semaphores[] = { m_SemaphoresRenderFinished[m_CurrentFrame] };
 	submit_info.signalSemaphoreCount = 1;
 	submit_info.pSignalSemaphores = signal_semaphores;
 
-	result = vkQueueSubmit(m_Queue, 1, &submit_info, m_InFlightFence);
+	result = vkQueueSubmit(m_Queue, 1, &submit_info, m_FencesInFlight[m_CurrentFrame]);
 	check_vk_result(result);
 
 
@@ -725,6 +738,8 @@ void Engine::RenderFrame()
 
 	result = vkQueuePresentKHR(m_Queue, &present_info);
 	check_vk_result(result);
+
+	m_CurrentFrame = (m_CurrentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
 }
 
 void Engine::SetupSDL()
@@ -784,7 +799,7 @@ void Engine::Init()
 	CreateVulkanGraphicsPipeline();
 	CreateVulkanFramebuffers();
 	CreateVulkanCommandPool();
-	CreateVulkanCommandBuffer();
+	CreateVulkanCommandBuffers();
 	CreateVulkanSyncObjects();
 }
 
@@ -816,9 +831,13 @@ void Engine::Shutdown()
 		vkDestroyImageView(m_Device, image_view, nullptr);
 	}
 
-	vkDestroySemaphore(m_Device, m_ImageAvailableSemaphore, nullptr);
-	vkDestroySemaphore(m_Device, m_RenderFinishedSemaphore, nullptr);
-	vkDestroyFence(m_Device, m_InFlightFence, nullptr);
+	for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		vkDestroySemaphore(m_Device, m_SemaphoresImageAvailable[i], nullptr);
+		vkDestroySemaphore(m_Device, m_SemaphoresRenderFinished[i], nullptr);
+		vkDestroyFence(m_Device, m_FencesInFlight[i], nullptr);
+	}
+
 	vkDestroyCommandPool(m_Device, m_CommandPool, nullptr);
 	vkDestroyPipeline(m_Device, m_Pipeline, nullptr);
 	vkDestroyPipelineLayout(m_Device, m_PipelineLayout, nullptr);
